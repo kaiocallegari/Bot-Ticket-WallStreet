@@ -1,0 +1,366 @@
+from __future__ import annotations
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+import config
+import database
+import ui
+import utils
+
+
+class TicketBot(commands.Bot):
+    def __init__(self) -> None:
+        intents = discord.Intents.default()
+        intents.members = True
+        intents.message_content = True
+        super().__init__(command_prefix="!", intents=intents, help_command=None)
+
+    async def setup_hook(self) -> None:
+        await database.init()
+
+        self.add_view(ui.PainelView())
+        self.add_view(ui.AtendimentoView())
+        self.add_view(ui.AvaliacaoView())
+
+        self.tree.add_command(grupo_config)
+        self.tree.add_command(grupo_ticket)
+
+        if config.GUILD_ID:
+            guild = discord.Object(id=int(config.GUILD_ID))
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+        else:
+            await self.tree.sync()
+
+    async def on_ready(self) -> None:
+        for guild in self.guilds:
+            await database.limpar_orfaos(guild.id, {c.id for c in guild.channels})
+        await self.change_presence(
+            activity=discord.Activity(
+                type=discord.ActivityType.watching, name="a Central de Atendimento"
+            )
+        )
+        print(f"Conectado como {self.user} • {len(self.guilds)} servidor(es)")
+
+    async def on_guild_channel_delete(self, canal: discord.abc.GuildChannel) -> None:
+        ticket = await database.get_ticket(canal.id)
+        if ticket and ticket["status"] == "aberto":
+            await database.fechar(canal.id, self.user.id)
+
+
+bot = TicketBot()
+
+
+# ==================================================================== /config
+grupo_config = app_commands.Group(
+    name="config",
+    description="Configurações da Central de Atendimento",
+    guild_only=True,
+    default_permissions=discord.Permissions(manage_guild=True),
+)
+
+
+@grupo_config.command(name="painel", description="Publica o painel de atendimento neste canal")
+async def cfg_painel(interaction: discord.Interaction) -> None:
+    guild, canal = interaction.guild, interaction.channel
+    if guild is None or not isinstance(canal, discord.TextChannel):
+        return
+    cfg = await database.get_config(guild.id)
+    faltando = [
+        meta["nome"]
+        for meta in config.CATEGORIAS.values()
+        if not isinstance(guild.get_channel(cfg[meta["campo_config"]] or 0), discord.CategoryChannel)
+    ]
+    mensagem = await canal.send(embed=utils.painel_embed(guild), view=ui.PainelView())
+    await database.set_config(guild.id, canal_painel=canal.id, mensagem_painel=mensagem.id)
+
+    texto = "Painel publicado com sucesso."
+    if faltando:
+        texto += "\n\n⚠️ Configure ainda a categoria de: **" + "**, **".join(faltando) + "**."
+    await utils.responder(interaction, utils.sucesso(texto))
+
+
+@grupo_config.command(
+    name="categoria-suporte", description="Define a categoria onde os tickets de Suporte são criados"
+)
+@app_commands.describe(categoria="Categoria do Discord")
+async def cfg_cat_suporte(
+    interaction: discord.Interaction, categoria: discord.CategoryChannel
+) -> None:
+    await database.set_config(interaction.guild.id, categoria_suporte=categoria.id)
+    await utils.responder(
+        interaction, utils.sucesso(f"Tickets de **Suporte** serão criados em **{categoria.name}**.")
+    )
+
+
+@grupo_config.command(
+    name="categoria-comprar", description="Define a categoria onde os tickets de Comprar são criados"
+)
+@app_commands.describe(categoria="Categoria do Discord")
+async def cfg_cat_comprar(
+    interaction: discord.Interaction, categoria: discord.CategoryChannel
+) -> None:
+    await database.set_config(interaction.guild.id, categoria_comprar=categoria.id)
+    await utils.responder(
+        interaction, utils.sucesso(f"Tickets de **Comprar** serão criados em **{categoria.name}**.")
+    )
+
+
+@grupo_config.command(name="canal-logs", description="Canal de auditoria e arquivamento dos transcripts")
+@app_commands.describe(canal="Canal de texto")
+async def cfg_logs(interaction: discord.Interaction, canal: discord.TextChannel) -> None:
+    await database.set_config(interaction.guild.id, canal_logs=canal.id)
+    await utils.responder(interaction, utils.sucesso(f"Logs serão enviados em {canal.mention}."))
+
+
+@grupo_config.command(name="canal-avaliacoes", description="Canal onde as avaliações são publicadas")
+@app_commands.describe(canal="Canal de texto")
+async def cfg_avaliacoes(interaction: discord.Interaction, canal: discord.TextChannel) -> None:
+    await database.set_config(interaction.guild.id, canal_avaliacoes=canal.id)
+    await utils.responder(
+        interaction, utils.sucesso(f"Avaliações serão publicadas em {canal.mention}.")
+    )
+
+
+@grupo_config.command(name="cargo-adicionar", description="Autoriza um cargo nas funções administrativas")
+@app_commands.describe(cargo="Cargo da equipe")
+async def cfg_cargo_add(interaction: discord.Interaction, cargo: discord.Role) -> None:
+    novo = await database.add_cargo(interaction.guild.id, cargo.id)
+    embed = (
+        utils.sucesso(f"O cargo {cargo.mention} agora tem acesso aos tickets.")
+        if novo
+        else utils.aviso(f"O cargo {cargo.mention} já estava autorizado.")
+    )
+    await utils.responder(interaction, embed)
+
+
+@grupo_config.command(name="cargo-remover", description="Remove a autorização de um cargo")
+@app_commands.describe(cargo="Cargo da equipe")
+async def cfg_cargo_rem(interaction: discord.Interaction, cargo: discord.Role) -> None:
+    removido = await database.remove_cargo(interaction.guild.id, cargo.id)
+    embed = (
+        utils.sucesso(f"O cargo {cargo.mention} não tem mais acesso aos tickets.")
+        if removido
+        else utils.aviso(f"O cargo {cargo.mention} não estava autorizado.")
+    )
+    await utils.responder(interaction, embed)
+
+
+@grupo_config.command(name="limite-tickets", description="Máximo de tickets abertos por membro")
+@app_commands.describe(quantidade="Entre 1 e 10")
+async def cfg_limite(
+    interaction: discord.Interaction, quantidade: app_commands.Range[int, 1, 10]
+) -> None:
+    await database.set_config(interaction.guild.id, limite_por_membro=quantidade)
+    await utils.responder(
+        interaction, utils.sucesso(f"Limite definido em **{quantidade}** ticket(s) por membro.")
+    )
+
+
+@grupo_config.command(name="mensagem-abertura", description="Edita o texto de boas-vindas do ticket")
+async def cfg_mensagem(interaction: discord.Interaction) -> None:
+    cfg = await database.get_config(interaction.guild.id)
+    await interaction.response.send_modal(ui.AberturaModal(cfg["mensagem_abertura"]))
+
+
+ESCOLHAS = [
+    app_commands.Choice(name="ativar", value=1),
+    app_commands.Choice(name="desativar", value=0),
+]
+
+
+@grupo_config.command(name="avaliacao", description="Liga ou desliga a avaliação por estrelas")
+@app_commands.choices(estado=ESCOLHAS)
+async def cfg_avaliacao(
+    interaction: discord.Interaction, estado: app_commands.Choice[int]
+) -> None:
+    await database.set_config(interaction.guild.id, avaliacao_ativa=estado.value)
+    texto = "ativada" if estado.value else "desativada"
+    await utils.responder(interaction, utils.sucesso(f"Avaliação por estrelas **{texto}**."))
+
+
+@grupo_config.command(name="transcript", description="Liga ou desliga a geração do transcript")
+@app_commands.choices(estado=ESCOLHAS)
+async def cfg_transcript(
+    interaction: discord.Interaction, estado: app_commands.Choice[int]
+) -> None:
+    await database.set_config(interaction.guild.id, transcript_ativo=estado.value)
+    texto = "ativado" if estado.value else "desativado"
+    await utils.responder(interaction, utils.sucesso(f"Geração de transcript **{texto}**."))
+
+
+@grupo_config.command(name="ver", description="Mostra toda a configuração atual do servidor")
+async def cfg_ver(interaction: discord.Interaction) -> None:
+    guild = interaction.guild
+    cfg = await database.get_config(guild.id)
+
+    def canal(valor: int | None) -> str:
+        c = guild.get_channel(valor or 0)
+        return c.mention if isinstance(c, discord.TextChannel) else "`não definido`"
+
+    def categoria(valor: int | None) -> str:
+        c = guild.get_channel(valor or 0)
+        return f"**{c.name}**" if isinstance(c, discord.CategoryChannel) else "`não definida`"
+
+    cargos = await database.get_cargos(guild.id)
+    lista = ", ".join(f"<@&{r}>" for r in cargos) or "`nenhum cargo autorizado`"
+
+    embed = discord.Embed(
+        title="⚙️ Configuração da Central de Atendimento",
+        color=config.COR_PADRAO,
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="🔵 Categoria Suporte", value=categoria(cfg["categoria_suporte"]), inline=True)
+    embed.add_field(name="💰 Categoria Comprar", value=categoria(cfg["categoria_comprar"]), inline=True)
+    embed.add_field(name="📋 Canal de logs", value=canal(cfg["canal_logs"]), inline=True)
+    embed.add_field(name="⭐ Canal de avaliações", value=canal(cfg["canal_avaliacoes"]), inline=True)
+    embed.add_field(name="🎫 Limite por membro", value=str(cfg["limite_por_membro"]), inline=True)
+    embed.add_field(name="🔢 Tickets criados", value=str(cfg["contador"]), inline=True)
+    embed.add_field(
+        name="⭐ Avaliação", value="Ativada" if cfg["avaliacao_ativa"] else "Desativada", inline=True
+    )
+    embed.add_field(
+        name="📄 Transcript", value="Ativado" if cfg["transcript_ativo"] else "Desativado", inline=True
+    )
+    embed.add_field(name="👮 Cargos autorizados", value=lista, inline=False)
+    embed.add_field(
+        name="💬 Mensagem de abertura",
+        value=(cfg["mensagem_abertura"] or config.MENSAGEM_ABERTURA_PADRAO)[:1024],
+        inline=False,
+    )
+    embed.set_footer(text=guild.name, icon_url=guild.icon.url if guild.icon else None)
+    await utils.responder(interaction, embed)
+
+
+@grupo_config.command(name="resetar", description="Apaga a configuração do servidor")
+async def cfg_resetar(interaction: discord.Interaction) -> None:
+    await database.reset_config(interaction.guild.id)
+    await utils.responder(
+        interaction,
+        utils.sucesso("Configuração apagada. Os tickets já registrados foram mantidos."),
+    )
+
+
+# ==================================================================== /ticket
+grupo_ticket = app_commands.Group(
+    name="ticket", description="Comandos de atendimento", guild_only=True
+)
+
+
+async def _ticket_do_canal(interaction: discord.Interaction) -> dict | None:
+    if not await utils.garantir_staff(interaction):
+        return None
+    ticket = await database.get_ticket(interaction.channel.id)
+    if not ticket or ticket["status"] != "aberto":
+        await utils.responder(interaction, utils.erro("Este canal não é um ticket aberto."))
+        return None
+    return ticket
+
+
+@grupo_ticket.command(name="fechar", description="Finaliza o ticket deste canal")
+@app_commands.describe(motivo="Motivo do encerramento (opcional)")
+async def ticket_fechar(interaction: discord.Interaction, motivo: str | None = None) -> None:
+    ticket = await _ticket_do_canal(interaction)
+    if not ticket:
+        return
+    await utils.responder(interaction, utils.sucesso("Finalizando o atendimento..."))
+    await ui.finalizar_ticket(interaction.channel, ticket, interaction.user, motivo)
+
+
+@grupo_ticket.command(name="adicionar", description="Adiciona um membro ao ticket")
+@app_commands.describe(membro="Quem será adicionado")
+async def ticket_adicionar(interaction: discord.Interaction, membro: discord.Member) -> None:
+    ticket = await _ticket_do_canal(interaction)
+    if not ticket:
+        return
+    try:
+        await interaction.channel.set_permissions(
+            membro, overwrite=ui.PERM_MEMBRO, reason=f"Adicionado por {interaction.user}"
+        )
+    except discord.Forbidden:
+        await utils.responder(interaction, utils.erro("Não tenho permissão para alterar este canal."))
+        return
+    await utils.responder(interaction, utils.sucesso(f"{membro.mention} foi adicionado ao ticket."))
+    await utils.enviar_log(
+        interaction.guild,
+        utils.log_embed(
+            "Membro adicionado", ticket, interaction.user, interaction.guild, config.COR_INFO,
+            f"{membro.mention} (`{membro.id}`)",
+        ),
+    )
+
+
+@grupo_ticket.command(name="remover", description="Remove um membro do ticket")
+@app_commands.describe(membro="Quem será removido")
+async def ticket_remover(interaction: discord.Interaction, membro: discord.Member) -> None:
+    ticket = await _ticket_do_canal(interaction)
+    if not ticket:
+        return
+    if membro.id == ticket["user_id"]:
+        await utils.responder(interaction, utils.erro("Não é possível remover o autor do ticket."))
+        return
+    try:
+        await interaction.channel.set_permissions(
+            membro, overwrite=None, reason=f"Removido por {interaction.user}"
+        )
+    except discord.Forbidden:
+        await utils.responder(interaction, utils.erro("Não tenho permissão para alterar este canal."))
+        return
+    await utils.responder(interaction, utils.sucesso(f"{membro.mention} foi removido do ticket."))
+    await utils.enviar_log(
+        interaction.guild,
+        utils.log_embed(
+            "Membro removido", ticket, interaction.user, interaction.guild, config.COR_INFO,
+            f"{membro.mention} (`{membro.id}`)",
+        ),
+    )
+
+
+@grupo_ticket.command(name="stats", description="Total de tickets, abertos e média das avaliações")
+async def ticket_stats(interaction: discord.Interaction) -> None:
+    if not await utils.garantir_staff(interaction):
+        return
+    dados = await database.stats(interaction.guild.id)
+    media = (
+        f"⭐ {dados['media']:.2f}/5 ({dados['avaliacoes']} avaliações)"
+        if dados["media"] is not None
+        else "`sem avaliações`"
+    )
+    embed = discord.Embed(
+        title="📊 Estatísticas de atendimento",
+        color=config.COR_PADRAO,
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="Total de tickets", value=str(dados["total"]), inline=True)
+    embed.add_field(name="Abertos agora", value=str(dados["abertos"]), inline=True)
+    embed.add_field(name="Média das avaliações", value=media, inline=False)
+    await utils.responder(interaction, embed)
+
+
+# ==================================================================== erros
+@bot.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+) -> None:
+    if isinstance(error, app_commands.MissingPermissions):
+        embed = utils.erro("Você precisa da permissão **Gerenciar Servidor** para usar este comando.")
+    elif isinstance(error, app_commands.CommandOnCooldown):
+        embed = utils.aviso(f"Aguarde {error.retry_after:.0f}s para usar este comando novamente.")
+    elif isinstance(error, app_commands.NoPrivateMessage):
+        embed = utils.erro("Este comando só funciona dentro de um servidor.")
+    else:
+        embed = utils.erro("Ocorreu um erro inesperado ao executar este comando.")
+        print(f"[erro] {type(error).__name__}: {error}")
+    try:
+        await utils.responder(interaction, embed)
+    except discord.HTTPException:
+        pass
+
+
+if __name__ == "__main__":
+    if not config.TOKEN:
+        raise SystemExit("Defina DISCORD_TOKEN no arquivo .env")
+    discord.utils.setup_logging()
+    bot.run(config.TOKEN)
