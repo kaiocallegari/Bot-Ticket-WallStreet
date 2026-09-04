@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 import discord
 
@@ -57,7 +58,7 @@ async def abrir_ticket(interaction: discord.Interaction, categoria: str, assunto
     categoria_discord = guild.get_channel(cfg[meta["campo_config"]] or 0)
     if not isinstance(categoria_discord, discord.CategoryChannel):
         await interaction.followup.send(
-            embed=utils.erro(
+            view=utils.erro(
                 f"A categoria de **{meta['nome']}** ainda não foi configurada.\n"
                 f"Um administrador precisa usar `/config categoria-{categoria}`."
             ),
@@ -67,7 +68,7 @@ async def abrir_ticket(interaction: discord.Interaction, categoria: str, assunto
 
     if not guild.me.guild_permissions.manage_channels:
         await interaction.followup.send(
-            embed=utils.erro("Não tenho a permissão **Gerenciar Canais** neste servidor."),
+            view=utils.erro("Não tenho a permissão **Gerenciar Canais** neste servidor."),
             ephemeral=True,
         )
         return
@@ -75,7 +76,7 @@ async def abrir_ticket(interaction: discord.Interaction, categoria: str, assunto
     limite = cfg["limite_por_membro"]
     if await database.contar_abertos(guild.id, membro.id) >= limite:
         await interaction.followup.send(
-            embed=utils.aviso(
+            view=utils.aviso(
                 f"Você já atingiu o limite de **{limite}** ticket(s) aberto(s). "
                 "Finalize o atendimento atual antes de abrir outro."
             ),
@@ -104,36 +105,29 @@ async def abrir_ticket(interaction: discord.Interaction, categoria: str, assunto
         )
     except discord.Forbidden:
         await interaction.followup.send(
-            embed=utils.erro("Não consegui criar o canal. Verifique minhas permissões na categoria."),
+            view=utils.erro("Não consegui criar o canal. Verifique minhas permissões na categoria."),
             ephemeral=True,
         )
         return
     except discord.HTTPException:
         await interaction.followup.send(
-            embed=utils.erro("Erro ao criar o canal do ticket. Tente novamente."), ephemeral=True
+            view=utils.erro("Erro ao criar o canal do ticket. Tente novamente."), ephemeral=True
         )
         return
 
     await database.criar_ticket(guild.id, canal.id, membro.id, categoria, numero, assunto)
 
-    embed = utils.abertura_embed(membro, categoria, numero, assunto, cfg["mensagem_abertura"])
-    await canal.send(content=membro.mention, embed=embed)
-    await canal.send(
-        embed=discord.Embed(
-            description="**Opções exclusivas para o uso dos responsáveis pelo atendimento!**",
-            color=config.COR_PADRAO,
-        ),
-        view=AtendimentoView(),
-    )
+    await canal.send(view=utils.abertura_view(membro, categoria, numero, assunto, cfg["mensagem_abertura"]))
+    await canal.send(view=AtendimentoView())
 
     ticket = await database.get_ticket(canal.id)
     if ticket:
         await utils.enviar_log(
-            guild, utils.log_embed("Ticket aberto", ticket, membro, guild, config.COR_SUCESSO, assunto)
+            guild, utils.log_view("Ticket aberto", ticket, membro, guild, config.COR_SUCESSO, assunto)
         )
 
     await interaction.followup.send(
-        embed=utils.sucesso(f"Seu ticket foi aberto em {canal.mention}."), ephemeral=True
+        view=utils.sucesso(f"Seu ticket foi aberto em {canal.mention}."), ephemeral=True
     )
 
 
@@ -159,11 +153,29 @@ class CategoriaButton(discord.ui.Button):
         await interaction.response.send_modal(TicketModal(self.chave))
 
 
-class PainelView(discord.ui.View):
+class PainelView(discord.ui.LayoutView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
+        categorias = "\n\n".join(
+            f"{m['emoji']}  **{m['nome']}**\n{m['descricao']}" for m in config.CATEGORIAS.values()
+        )
+        linha = discord.ui.ActionRow()
         for chave, meta in config.CATEGORIAS.items():
-            self.add_item(CategoriaButton(chave, meta))
+            linha.add_item(CategoriaButton(chave, meta))
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(f"# {config.PAINEL_TITULO}\n{config.PAINEL_INTRO}"),
+                discord.ui.Separator(spacing=discord.SeparatorSpacing.large),
+                discord.ui.TextDisplay(categorias),
+                discord.ui.Separator(spacing=discord.SeparatorSpacing.large),
+                discord.ui.TextDisplay(config.PAINEL_REGRAS),
+                discord.ui.Separator(),
+                discord.ui.TextDisplay(f"-# {config.PAINEL_RODAPE}"),
+                linha,
+                accent_colour=config.COR_PADRAO,
+            )
+        )
 
 
 # ================================================================= finalização
@@ -179,7 +191,7 @@ async def finalizar_ticket(
 
     await utils.enviar_log(
         guild,
-        utils.log_embed("Ticket finalizado", ticket, staff, guild, config.COR_ERRO, motivo),
+        utils.log_view("Ticket finalizado", ticket, staff, guild, config.COR_ERRO, motivo),
         utils.arquivo_transcript(pagina, ticket["numero"]) if pagina else None,
     )
 
@@ -188,7 +200,7 @@ async def finalizar_ticket(
         await _enviar_dm(membro, ticket, guild, cfg, pagina)
 
     await canal.send(
-        embed=utils.aviso(
+        view=utils.aviso(
             f"Ticket finalizado por {staff.mention}.\n"
             f"Este canal será apagado em **{config.DELAY_DELETAR} segundos**."
         )
@@ -204,18 +216,20 @@ async def _enviar_dm(
     membro: discord.Member, ticket: dict, guild: discord.Guild, cfg: dict, pagina: str | None
 ) -> None:
     meta = config.CATEGORIAS.get(ticket["categoria"], {"nome": ticket["categoria"], "emoji": "🎫"})
-    embed = discord.Embed(
-        title="🎫 Atendimento finalizado",
-        description=(
-            f"Seu ticket **#{ticket['numero']:04d}** ({meta['emoji']} {meta['nome']}) "
-            f"no servidor **{guild.name}** foi finalizado."
-        ),
-        color=config.COR_PADRAO,
-        timestamp=discord.utils.utcnow(),
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.TextDisplay(
+                f"### 🎫  Atendimento finalizado\n"
+                f"Seu ticket **#{ticket['numero']:04d}** ({meta['emoji']} {meta['nome']}) "
+                f"no servidor **{guild.name}** foi finalizado."
+            ),
+            accent_colour=config.COR_PADRAO,
+        )
     )
     try:
         await membro.send(
-            embed=embed,
+            view=view,
             file=utils.arquivo_transcript(pagina, ticket["numero"]) if pagina else None,
         )
     except discord.HTTPException:
@@ -224,42 +238,49 @@ async def _enviar_dm(
     if not cfg["avaliacao_ativa"]:
         return
 
-    aval = discord.Embed(
-        title="⭐ Avalie o atendimento",
-        description="Selecione abaixo quantas estrelas a equipe merece por este atendimento.",
-        color=config.COR_AVISO,
-    )
-    aval.set_footer(text=f"ticket:{ticket['id']}")
     try:
-        await membro.send(embed=aval, view=AvaliacaoView())
+        await membro.send(view=AvaliacaoView(ticket["id"]))
     except discord.HTTPException:
         pass
 
 
-class ConfirmarView(discord.ui.View):
+class _ConfirmarButton(discord.ui.Button):
     def __init__(self, ticket: dict) -> None:
-        super().__init__(timeout=60)
+        super().__init__(label="Confirmar", emoji="✅", style=discord.ButtonStyle.success)
         self.ticket = ticket
 
-    @discord.ui.button(label="Confirmar", emoji="✅", style=discord.ButtonStyle.success)
-    async def confirmar(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    async def callback(self, interaction: discord.Interaction) -> None:
         canal = interaction.channel
-        if not isinstance(canal, discord.TextChannel) or not isinstance(
-            interaction.user, discord.Member
-        ):
+        if not isinstance(canal, discord.TextChannel) or not isinstance(interaction.user, discord.Member):
             return
-        await interaction.response.edit_message(
-            embed=utils.sucesso("Finalizando o atendimento..."), view=None
-        )
-        self.stop()
+        await interaction.response.edit_message(view=utils.sucesso("Finalizando o atendimento..."))
+        if self.view:
+            self.view.stop()
         await finalizar_ticket(canal, self.ticket, interaction.user)
 
-    @discord.ui.button(label="Cancelar", emoji="✖️", style=discord.ButtonStyle.secondary)
-    async def cancelar(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await interaction.response.edit_message(
-            embed=utils.info("Finalização cancelada."), view=None
+
+class _CancelarButton(discord.ui.Button):
+    def __init__(self) -> None:
+        super().__init__(label="Cancelar", emoji="✖️", style=discord.ButtonStyle.secondary)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(view=utils.info("Finalização cancelada."))
+        if self.view:
+            self.view.stop()
+
+
+def _confirmar_view(ticket: dict) -> discord.ui.LayoutView:
+    view = discord.ui.LayoutView(timeout=60)
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.TextDisplay(
+                "### ⚠️  Finalizar atendimento?\nTem certeza que deseja finalizar este atendimento?"
+            ),
+            discord.ui.ActionRow(_ConfirmarButton(ticket), _CancelarButton()),
+            accent_colour=config.COR_AVISO,
         )
-        self.stop()
+    )
+    return view
 
 
 # ================================================================= painel do staff
@@ -318,15 +339,15 @@ class MembroSelect(discord.ui.UserSelect):
         acao = "adicionado ao" if self.adicionar else "removido do"
         await utils.responder(interaction, utils.sucesso(f"{alvo.mention} foi {acao} ticket."))
         await canal.send(
-            embed=utils.info(
+            view=utils.info(
                 f"{alvo.mention} foi {acao} atendimento por {interaction.user.mention}.",
-                titulo="👥 Participantes",
+                titulo="👥  Participantes",
             )
         )
         if interaction.guild:
             await utils.enviar_log(
                 interaction.guild,
-                utils.log_embed(
+                utils.log_view(
                     "Membro adicionado" if self.adicionar else "Membro removido",
                     self.ticket,
                     interaction.user,
@@ -337,10 +358,17 @@ class MembroSelect(discord.ui.UserSelect):
             )
 
 
-class MembroView(discord.ui.View):
-    def __init__(self, adicionar: bool, ticket: dict) -> None:
-        super().__init__(timeout=60)
-        self.add_item(MembroSelect(adicionar, ticket))
+def _membro_view(adicionar: bool, ticket: dict) -> discord.ui.LayoutView:
+    texto = "Selecione quem deve ser adicionado ao ticket." if adicionar else "Selecione quem deve ser removido do ticket."
+    view = discord.ui.LayoutView(timeout=60)
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.TextDisplay(texto),
+            discord.ui.ActionRow(MembroSelect(adicionar, ticket)),
+            accent_colour=config.COR_INFO,
+        )
+    )
+    return view
 
 
 class MoverSelect(discord.ui.Select):
@@ -387,23 +415,29 @@ class MoverSelect(discord.ui.Select):
             interaction, utils.sucesso(f"Ticket movido para **{meta['nome']}**.")
         )
         await canal.send(
-            embed=utils.info(
+            view=utils.info(
                 f"Ticket movido para {meta['emoji']} **{meta['nome']}** por {interaction.user.mention}.",
-                titulo="🔁 Ticket movido",
+                titulo="🔁  Ticket movido",
             )
         )
         await utils.enviar_log(
             guild,
-            utils.log_embed(
+            utils.log_view(
                 "Ticket movido", self.ticket, interaction.user, guild, config.COR_INFO, meta["nome"]
             ),
         )
 
 
-class MoverView(discord.ui.View):
-    def __init__(self, ticket: dict) -> None:
-        super().__init__(timeout=60)
-        self.add_item(MoverSelect(ticket))
+def _mover_view(ticket: dict) -> discord.ui.LayoutView:
+    view = discord.ui.LayoutView(timeout=60)
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.TextDisplay("Selecione a categoria de destino."),
+            discord.ui.ActionRow(MoverSelect(ticket)),
+            accent_colour=config.COR_INFO,
+        )
+    )
+    return view
 
 
 async def _ticket_valido(interaction: discord.Interaction) -> dict | None:
@@ -420,82 +454,117 @@ async def _ticket_valido(interaction: discord.Interaction) -> dict | None:
     return ticket
 
 
-class AtendimentoView(discord.ui.View):
+class _AcaoButton(discord.ui.Button):
+    """Botão genérico que delega o clique para um método vinculado da view dona."""
+
+    def __init__(self, *, acao, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._acao = acao
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await self._acao(interaction, self)
+
+
+class AtendimentoView(discord.ui.LayoutView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
-    @discord.ui.button(
-        label="Chamar Membro", emoji="🔔", style=discord.ButtonStyle.secondary,
-        custom_id="atd:chamar", row=0,
-    )
-    async def chamar(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        linha1 = discord.ui.ActionRow(
+            _AcaoButton(
+                acao=self._chamar, label="Chamar Membro", emoji="🔔",
+                style=discord.ButtonStyle.secondary, custom_id="atd:chamar",
+            ),
+            _AcaoButton(
+                acao=self._adicionar, label="Adicionar Membro", emoji="➕",
+                style=discord.ButtonStyle.secondary, custom_id="atd:adicionar",
+            ),
+            _AcaoButton(
+                acao=self._remover, label="Remover Membro", emoji="❌",
+                style=discord.ButtonStyle.secondary, custom_id="atd:remover",
+            ),
+            _AcaoButton(
+                acao=self._mover, label="Mover Ticket", emoji="🔁",
+                style=discord.ButtonStyle.secondary, custom_id="atd:mover",
+            ),
+        )
+        linha2 = discord.ui.ActionRow(
+            _AcaoButton(
+                acao=self._renomear, label="Trocar Nome do Canal", emoji="📝",
+                style=discord.ButtonStyle.secondary, custom_id="atd:nome",
+            ),
+            _AcaoButton(
+                acao=self._assumir, label="Assumir Atendimento", emoji="🤔",
+                style=discord.ButtonStyle.secondary, custom_id="atd:assumir",
+            ),
+            _AcaoButton(
+                acao=self._finalizar, label="Finalizar Ticket", emoji="✅",
+                style=discord.ButtonStyle.success, custom_id="atd:finalizar",
+            ),
+        )
+
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay("**🎛️  Painel do atendimento**\n-# Ferramentas exclusivas da equipe"),
+                discord.ui.Separator(),
+                linha1,
+                linha2,
+                accent_colour=config.COR_PADRAO,
+            )
+        )
+
+    async def _chamar(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         ticket = await _ticket_valido(interaction)
         if not ticket:
             return
+
         await interaction.response.send_message(
-            content=f"<@{ticket['user_id']}>",
-            embed=utils.aviso(
-                f"{interaction.user.mention} está chamando você neste atendimento.",
-                titulo="🔔 Chamado da equipe",
+            view=utils.aviso(
+                f"<@{ticket['user_id']}> {interaction.user.mention} está chamando você neste atendimento.",
+                titulo="🔔  Chamado da equipe",
             ),
             allowed_mentions=discord.AllowedMentions(users=True),
         )
 
-    @discord.ui.button(
-        label="Adicionar Membro", emoji="➕", style=discord.ButtonStyle.secondary,
-        custom_id="atd:adicionar", row=0,
-    )
-    async def adicionar(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        membro = interaction.guild.get_member(ticket["user_id"]) if interaction.guild else None
+        if membro is None:
+            return
+        canal = interaction.channel
+        link_canal = canal.mention if isinstance(canal, discord.TextChannel) else "o canal do ticket"
+        servidor = f" em **{interaction.guild.name}**" if interaction.guild else ""
+        try:
+            await membro.send(
+                view=utils.aviso(
+                    f"A equipe está te chamando no seu ticket **#{ticket['numero']:04d}**{servidor}.\n"
+                    f"Entre em {link_canal} para responder.",
+                    titulo="🔔  Você foi chamado(a) em um ticket",
+                )
+            )
+        except discord.HTTPException:
+            pass
+
+    async def _adicionar(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         ticket = await _ticket_valido(interaction)
         if not ticket:
             return
-        await interaction.response.send_message(
-            embed=utils.info("Selecione quem deve ser adicionado ao ticket."),
-            view=MembroView(True, ticket),
-            ephemeral=True,
-        )
+        await interaction.response.send_message(view=_membro_view(True, ticket), ephemeral=True)
 
-    @discord.ui.button(
-        label="Remover Membro", emoji="❌", style=discord.ButtonStyle.secondary,
-        custom_id="atd:remover", row=0,
-    )
-    async def remover(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    async def _remover(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         ticket = await _ticket_valido(interaction)
         if not ticket:
             return
-        await interaction.response.send_message(
-            embed=utils.info("Selecione quem deve ser removido do ticket."),
-            view=MembroView(False, ticket),
-            ephemeral=True,
-        )
+        await interaction.response.send_message(view=_membro_view(False, ticket), ephemeral=True)
 
-    @discord.ui.button(
-        label="Mover Ticket", emoji="🔁", style=discord.ButtonStyle.secondary,
-        custom_id="atd:mover", row=0,
-    )
-    async def mover(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    async def _mover(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         ticket = await _ticket_valido(interaction)
         if not ticket:
             return
-        await interaction.response.send_message(
-            embed=utils.info("Selecione a categoria de destino."),
-            view=MoverView(ticket),
-            ephemeral=True,
-        )
+        await interaction.response.send_message(view=_mover_view(ticket), ephemeral=True)
 
-    @discord.ui.button(
-        label="Trocar Nome do Canal", emoji="📝", style=discord.ButtonStyle.secondary,
-        custom_id="atd:nome", row=1,
-    )
-    async def renomear(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    async def _renomear(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         if await _ticket_valido(interaction):
             await interaction.response.send_modal(NomeModal())
 
-    @discord.ui.button(
-        label="Assumir Atendimento", emoji="🤔", style=discord.ButtonStyle.secondary,
-        custom_id="atd:assumir", row=1,
-    )
-    async def assumir(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    async def _assumir(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         ticket = await _ticket_valido(interaction)
         if not ticket:
             return
@@ -505,33 +574,37 @@ class AtendimentoView(discord.ui.View):
                 utils.aviso(f"Este ticket já está sendo atendido por <@{ticket['claimed_by']}>."),
             )
             return
+
         await database.assumir(interaction.channel.id, interaction.user.id)
+
+        canal = interaction.channel
+        novo_nome = None
+        if isinstance(canal, discord.TextChannel):
+            novo_nome = f"{utils.slug(interaction.user.display_name)}-{ticket['numero']:04d}"
+            try:
+                await canal.edit(name=novo_nome, reason=f"Assumido por {interaction.user}")
+            except (discord.Forbidden, discord.HTTPException):
+                novo_nome = None
+
+        texto = f"{interaction.user.mention} assumiu este atendimento."
+        if novo_nome:
+            texto += f"\nCanal renomeado para **{novo_nome}**."
         await interaction.response.send_message(
-            embed=utils.sucesso(
-                f"{interaction.user.mention} assumiu este atendimento.", titulo="🤔 Atendimento assumido"
-            )
+            view=utils.sucesso(texto, titulo="🤔  Atendimento assumido")
         )
         if interaction.guild:
             await utils.enviar_log(
                 interaction.guild,
-                utils.log_embed(
+                utils.log_view(
                     "Ticket assumido", ticket, interaction.user, interaction.guild, config.COR_INFO
                 ),
             )
 
-    @discord.ui.button(
-        label="Finalizar Ticket", emoji="✅", style=discord.ButtonStyle.success,
-        custom_id="atd:finalizar", row=1,
-    )
-    async def finalizar(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+    async def _finalizar(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         ticket = await _ticket_valido(interaction)
         if not ticket:
             return
-        await interaction.response.send_message(
-            embed=utils.aviso("Tem certeza que deseja finalizar este atendimento?"),
-            view=ConfirmarView(ticket),
-            ephemeral=True,
-        )
+        await interaction.response.send_message(view=_confirmar_view(ticket), ephemeral=True)
 
 
 # ================================================================= avaliação
@@ -563,12 +636,12 @@ class ComentarioModal(discord.ui.Modal, title="Avaliar atendimento"):
         estrelas = "⭐" * self.nota + "▫️" * (5 - self.nota)
         confirmacao = utils.sucesso(
             f"Obrigado por avaliar!\n\n**Nota:** {estrelas} ({self.nota}/5)",
-            titulo="⭐ Avaliação registrada",
+            titulo="⭐  Avaliação registrada",
         )
         try:
-            await interaction.response.edit_message(embed=confirmacao, view=None)
+            await interaction.response.edit_message(view=confirmacao)
         except discord.HTTPException:
-            await self.mensagem.edit(embed=confirmacao, view=None)
+            await self.mensagem.edit(view=confirmacao)
             await utils.responder(interaction, confirmacao)
 
         guild = interaction.client.get_guild(ticket["guild_id"])
@@ -579,25 +652,53 @@ class ComentarioModal(discord.ui.Modal, title="Avaliar atendimento"):
         if not isinstance(canal, discord.TextChannel):
             return
 
-        embed = discord.Embed(
-            title="⭐ Nova avaliação de atendimento",
-            color=config.COR_AVISO,
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.add_field(name="Ticket", value=f"#{ticket['numero']:04d}", inline=True)
-        embed.add_field(name="Nota", value=f"{estrelas} ({self.nota}/5)", inline=True)
-        embed.add_field(name="Membro", value=f"<@{ticket['user_id']}>", inline=True)
-        embed.add_field(
-            name="Atendido por",
-            value=f"<@{ticket['claimed_by']}>" if ticket["claimed_by"] else "Ninguém assumiu",
-            inline=True,
-        )
+        linhas = [
+            f"**Ticket** • #{ticket['numero']:04d}",
+            f"**Nota** • {estrelas} ({self.nota}/5)",
+            f"**Membro** • <@{ticket['user_id']}>",
+            "**Atendido por** • " + (f"<@{ticket['claimed_by']}>" if ticket["claimed_by"] else "Ninguém assumiu"),
+        ]
+        corpo = "\n".join(linhas)
         if texto:
-            embed.add_field(name="Comentário", value=texto[:1024], inline=False)
+            corpo += f"\n\n**Comentário**\n{texto[:1024]}"
+
+        view = discord.ui.LayoutView(timeout=None)
+        view.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(f"### ⭐  Nova avaliação de atendimento\n{corpo}"),
+                accent_colour=config.COR_AVISO,
+            )
+        )
         try:
-            await canal.send(embed=embed)
+            await canal.send(view=view)
         except discord.HTTPException:
             pass
+
+
+def _extrair_ticket_id(mensagem: discord.Message | None) -> int | None:
+    """Lê o marcador ``ticket:<id>`` escondido no texto da mensagem de avaliação.
+
+    Precisa ler do conteúdo renderizado (e não de um atributo Python) porque, após um
+    reinício do bot, a interação é despachada para uma instância de view genérica sem
+    o estado original.
+    """
+    if mensagem is None:
+        return None
+
+    def procurar(componentes) -> int | None:
+        for c in componentes:
+            if isinstance(c, discord.TextDisplay):
+                m = re.search(r"ticket:(\d+)", c.content)
+                if m:
+                    return int(m.group(1))
+            filhos = getattr(c, "children", None)
+            if filhos:
+                achado = procurar(filhos)
+                if achado is not None:
+                    return achado
+        return None
+
+    return procurar(mensagem.components)
 
 
 class AvaliacaoSelect(discord.ui.Select):
@@ -613,11 +714,10 @@ class AvaliacaoSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         mensagem = interaction.message
-        rodape = mensagem.embeds[0].footer.text if mensagem and mensagem.embeds else None
-        if not rodape or not rodape.startswith("ticket:"):
+        ticket_id = _extrair_ticket_id(mensagem)
+        if ticket_id is None:
             await utils.responder(interaction, utils.erro("Não consegui identificar o ticket."))
             return
-        ticket_id = int(rodape.split(":", 1)[1])
 
         if await database.ja_avaliou(ticket_id):
             await utils.responder(interaction, utils.aviso("Este atendimento já foi avaliado."))
@@ -628,10 +728,19 @@ class AvaliacaoSelect(discord.ui.Select):
         )
 
 
-class AvaliacaoView(discord.ui.View):
-    def __init__(self) -> None:
+class AvaliacaoView(discord.ui.LayoutView):
+    def __init__(self, ticket_id: int | None = None) -> None:
         super().__init__(timeout=None)
-        self.add_item(AvaliacaoSelect())
+        texto = "### ⭐  Avalie o atendimento\nSelecione quantas estrelas a equipe merece por este atendimento."
+        if ticket_id is not None:
+            texto += f"\n-# ticket:{ticket_id}"
+        self.add_item(
+            discord.ui.Container(
+                discord.ui.TextDisplay(texto),
+                discord.ui.ActionRow(AvaliacaoSelect()),
+                accent_colour=config.COR_AVISO,
+            )
+        )
 
 
 # ================================================================= config

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import html
 import io
+import re
+import unicodedata
 from datetime import datetime
 
 import discord
@@ -10,83 +12,97 @@ import config
 import database
 
 
-# ---------------------------------------------------------------- embeds
-def sucesso(desc: str, titulo: str = "✅ Sucesso") -> discord.Embed:
-    return discord.Embed(title=titulo, description=desc, color=config.COR_SUCESSO)
+# ---------------------------------------------------------------- texto
+def slug(texto: str, maximo: int = 20) -> str:
+    """Normaliza um nome para uso em nome de canal (sem acento, minúsculo, com hífens)."""
+    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
+    texto = re.sub(r"[^a-zA-Z0-9]+", "-", texto).strip("-").lower()
+    return texto[:maximo].strip("-") or "staff"
 
 
-def erro(desc: str, titulo: str = "❌ Erro") -> discord.Embed:
-    return discord.Embed(title=titulo, description=desc, color=config.COR_ERRO)
-
-
-def aviso(desc: str, titulo: str = "⚠️ Atenção") -> discord.Embed:
-    return discord.Embed(title=titulo, description=desc, color=config.COR_AVISO)
-
-
-def info(desc: str, titulo: str = "ℹ️ Informação") -> discord.Embed:
-    return discord.Embed(title=titulo, description=desc, color=config.COR_INFO)
-
-
-def painel_embed(guild: discord.Guild) -> discord.Embed:
-    categorias = "\n\n".join(
-        f"{m['emoji']} **{m['nome']}** — {m['descricao']}" for m in config.CATEGORIAS.values()
+# ---------------------------------------------------------------- avisos (Components V2)
+def _notice(titulo: str, desc: str, cor: int) -> discord.ui.LayoutView:
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.TextDisplay(f"### {titulo}\n{desc}"),
+            accent_colour=cor,
+        )
     )
-    descricao = (
-        f"{config.PAINEL_INTRO}\n\n"
-        f"**▸ Categorias disponíveis:**\n\n{categorias}\n\n"
-        f"{config.PAINEL_REGRAS}"
-    )
-    embed = discord.Embed(
-        title=config.PAINEL_TITULO,
-        description=descricao,
-        color=config.COR_PADRAO,
-        timestamp=discord.utils.utcnow(),
-    )
-    embed.set_footer(
-        text=config.PAINEL_RODAPE, icon_url=guild.icon.url if guild.icon else None
-    )
-    return embed
+    return view
 
 
-def abertura_embed(
+def sucesso(desc: str, titulo: str = "✅  Sucesso") -> discord.ui.LayoutView:
+    return _notice(titulo, desc, config.COR_SUCESSO)
+
+
+def erro(desc: str, titulo: str = "❌  Erro") -> discord.ui.LayoutView:
+    return _notice(titulo, desc, config.COR_ERRO)
+
+
+def aviso(desc: str, titulo: str = "⚠️  Atenção") -> discord.ui.LayoutView:
+    return _notice(titulo, desc, config.COR_AVISO)
+
+
+def info(desc: str, titulo: str = "ℹ️  Informação") -> discord.ui.LayoutView:
+    return _notice(titulo, desc, config.COR_INFO)
+
+
+def abertura_view(
     membro: discord.abc.User, categoria: str, numero: int, assunto: str | None, texto: str | None
-) -> discord.Embed:
+) -> discord.ui.LayoutView:
     meta = config.CATEGORIAS[categoria]
     desc = (texto or config.MENSAGEM_ABERTURA_PADRAO).replace("{membro}", membro.mention)
-    embed = discord.Embed(
-        title=f"{meta['emoji']} Ticket de {meta['nome']} • #{numero:04d}",
-        description=desc,
-        color=config.COR_PADRAO,
-        timestamp=discord.utils.utcnow(),
-    )
-    embed.add_field(name="Categoria", value=f"{meta['emoji']} {meta['nome']}", inline=True)
-    embed.add_field(name="Aberto por", value=membro.mention, inline=True)
+    corpo = f"### {meta['emoji']}  Ticket de {meta['nome']} • #{numero:04d}\n{desc}"
+    linhas = [f"**Categoria** • {meta['emoji']} {meta['nome']}", f"**Aberto por** • {membro.mention}"]
     if assunto:
-        embed.add_field(name="Assunto", value=assunto[:1024], inline=False)
-    embed.set_thumbnail(url=membro.display_avatar.url)
-    return embed
+        linhas.append(f"**Assunto** • {assunto[:1024]}")
+
+    container = discord.ui.Container(
+        discord.ui.Section(
+            discord.ui.TextDisplay(corpo),
+            accessory=discord.ui.Thumbnail(membro.display_avatar.url),
+        ),
+        discord.ui.Separator(),
+        discord.ui.TextDisplay("\n".join(linhas)),
+        accent_colour=config.COR_PADRAO,
+    )
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(container)
+    return view
 
 
-def log_embed(
+def log_view(
     acao: str,
     ticket: dict,
     autor: discord.abc.User,
     guild: discord.Guild,
     cor: int = config.COR_PADRAO,
     extra: str | None = None,
-) -> discord.Embed:
+) -> discord.ui.LayoutView:
     meta = config.CATEGORIAS.get(ticket["categoria"], {"nome": ticket["categoria"], "emoji": "🎫"})
-    embed = discord.Embed(title=f"📋 {acao}", color=cor, timestamp=discord.utils.utcnow())
-    embed.add_field(name="Ticket", value=f"#{ticket['numero']:04d}", inline=True)
-    embed.add_field(name="Categoria", value=f"{meta['emoji']} {meta['nome']}", inline=True)
-    embed.add_field(name="Responsável", value=autor.mention, inline=True)
-    embed.add_field(name="Membro", value=f"<@{ticket['user_id']}>", inline=True)
+    linhas = [
+        f"**Ticket** • #{ticket['numero']:04d}",
+        f"**Categoria** • {meta['emoji']} {meta['nome']}",
+        f"**Responsável** • {autor.mention}",
+        f"**Membro** • <@{ticket['user_id']}>",
+    ]
     if ticket.get("claimed_by"):
-        embed.add_field(name="Atendido por", value=f"<@{ticket['claimed_by']}>", inline=True)
+        linhas.append(f"**Atendido por** • <@{ticket['claimed_by']}>")
+    corpo = "\n".join(linhas)
     if extra:
-        embed.add_field(name="Detalhes", value=extra[:1024], inline=False)
-    embed.set_footer(text=guild.name, icon_url=guild.icon.url if guild.icon else None)
-    return embed
+        corpo += f"\n\n**Detalhes**\n{extra[:1024]}"
+
+    agora = discord.utils.format_dt(discord.utils.utcnow(), style="R")
+    container = discord.ui.Container(
+        discord.ui.TextDisplay(f"### 📋  {acao}\n{corpo}"),
+        discord.ui.Separator(),
+        discord.ui.TextDisplay(f"-# {guild.name} • {agora}"),
+        accent_colour=cor,
+    )
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(container)
+    return view
 
 
 # ---------------------------------------------------------------- permissões
@@ -107,23 +123,19 @@ async def garantir_staff(interaction: discord.Interaction) -> bool:
 
 async def responder(
     interaction: discord.Interaction,
-    embed: discord.Embed,
-    view: discord.ui.View | None = None,
+    view: discord.ui.LayoutView,
     ephemeral: bool = True,
 ) -> None:
     """Responde sem quebrar caso a interação já tenha sido respondida/adiada."""
-    kwargs = {"embed": embed, "ephemeral": ephemeral}
-    if view is not None:
-        kwargs["view"] = view
     if interaction.response.is_done():
-        await interaction.followup.send(**kwargs)
+        await interaction.followup.send(view=view, ephemeral=ephemeral)
     else:
-        await interaction.response.send_message(**kwargs)
+        await interaction.response.send_message(view=view, ephemeral=ephemeral)
 
 
 # ---------------------------------------------------------------- logs
 async def enviar_log(
-    guild: discord.Guild, embed: discord.Embed, arquivo: discord.File | None = None
+    guild: discord.Guild, view: discord.ui.LayoutView, arquivo: discord.File | None = None
 ) -> None:
     cfg = await database.get_config(guild.id)
     canal = guild.get_channel(cfg["canal_logs"] or 0)
@@ -133,7 +145,7 @@ async def enviar_log(
     if not perms.send_messages or (arquivo and not perms.attach_files):
         return
     try:
-        await canal.send(embed=embed, file=arquivo)
+        await canal.send(view=view, file=arquivo)
     except discord.HTTPException:
         pass
 

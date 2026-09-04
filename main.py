@@ -73,7 +73,7 @@ async def cfg_painel(interaction: discord.Interaction) -> None:
         for meta in config.CATEGORIAS.values()
         if not isinstance(guild.get_channel(cfg[meta["campo_config"]] or 0), discord.CategoryChannel)
     ]
-    mensagem = await canal.send(embed=utils.painel_embed(guild), view=ui.PainelView())
+    mensagem = await canal.send(view=ui.PainelView())
     await database.set_config(guild.id, canal_painel=canal.id, mensagem_painel=mensagem.id)
 
     texto = "Painel publicado com sucesso."
@@ -128,24 +128,24 @@ async def cfg_avaliacoes(interaction: discord.Interaction, canal: discord.TextCh
 @app_commands.describe(cargo="Cargo da equipe")
 async def cfg_cargo_add(interaction: discord.Interaction, cargo: discord.Role) -> None:
     novo = await database.add_cargo(interaction.guild.id, cargo.id)
-    embed = (
+    view = (
         utils.sucesso(f"O cargo {cargo.mention} agora tem acesso aos tickets.")
         if novo
         else utils.aviso(f"O cargo {cargo.mention} já estava autorizado.")
     )
-    await utils.responder(interaction, embed)
+    await utils.responder(interaction, view)
 
 
 @grupo_config.command(name="cargo-remover", description="Remove a autorização de um cargo")
 @app_commands.describe(cargo="Cargo da equipe")
 async def cfg_cargo_rem(interaction: discord.Interaction, cargo: discord.Role) -> None:
     removido = await database.remove_cargo(interaction.guild.id, cargo.id)
-    embed = (
+    view = (
         utils.sucesso(f"O cargo {cargo.mention} não tem mais acesso aos tickets.")
         if removido
         else utils.aviso(f"O cargo {cargo.mention} não estava autorizado.")
     )
-    await utils.responder(interaction, embed)
+    await utils.responder(interaction, view)
 
 
 @grupo_config.command(name="limite-tickets", description="Máximo de tickets abertos por membro")
@@ -207,31 +207,41 @@ async def cfg_ver(interaction: discord.Interaction) -> None:
     cargos = await database.get_cargos(guild.id)
     lista = ", ".join(f"<@&{r}>" for r in cargos) or "`nenhum cargo autorizado`"
 
-    embed = discord.Embed(
-        title="⚙️ Configuração da Central de Atendimento",
-        color=config.COR_PADRAO,
-        timestamp=discord.utils.utcnow(),
+    categorias_txt = (
+        f"**Suporte** • {categoria(cfg['categoria_suporte'])}\n"
+        f"**Comprar** • {categoria(cfg['categoria_comprar'])}"
     )
-    embed.add_field(name="🔵 Categoria Suporte", value=categoria(cfg["categoria_suporte"]), inline=True)
-    embed.add_field(name="💰 Categoria Comprar", value=categoria(cfg["categoria_comprar"]), inline=True)
-    embed.add_field(name="📋 Canal de logs", value=canal(cfg["canal_logs"]), inline=True)
-    embed.add_field(name="⭐ Canal de avaliações", value=canal(cfg["canal_avaliacoes"]), inline=True)
-    embed.add_field(name="🎫 Limite por membro", value=str(cfg["limite_por_membro"]), inline=True)
-    embed.add_field(name="🔢 Tickets criados", value=str(cfg["contador"]), inline=True)
-    embed.add_field(
-        name="⭐ Avaliação", value="Ativada" if cfg["avaliacao_ativa"] else "Desativada", inline=True
+    canais_txt = (
+        f"**Logs** • {canal(cfg['canal_logs'])}\n"
+        f"**Avaliações** • {canal(cfg['canal_avaliacoes'])}"
     )
-    embed.add_field(
-        name="📄 Transcript", value="Ativado" if cfg["transcript_ativo"] else "Desativado", inline=True
+    opcoes_txt = (
+        f"**Limite por membro** • {cfg['limite_por_membro']}\n"
+        f"**Tickets criados** • {cfg['contador']}\n"
+        f"**Avaliação** • {'Ativada' if cfg['avaliacao_ativa'] else 'Desativada'}\n"
+        f"**Transcript** • {'Ativado' if cfg['transcript_ativo'] else 'Desativado'}\n"
+        f"**Cargos autorizados** • {lista}"
     )
-    embed.add_field(name="👮 Cargos autorizados", value=lista, inline=False)
-    embed.add_field(
-        name="💬 Mensagem de abertura",
-        value=(cfg["mensagem_abertura"] or config.MENSAGEM_ABERTURA_PADRAO)[:1024],
-        inline=False,
+    mensagem_txt = (cfg["mensagem_abertura"] or config.MENSAGEM_ABERTURA_PADRAO)[:1024]
+
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.TextDisplay("### ⚙️  Configuração da Central de Atendimento"),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(f"**🗂️  Categorias**\n{categorias_txt}"),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(f"**📡  Canais**\n{canais_txt}"),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(f"**🎚️  Opções**\n{opcoes_txt}"),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(f"**💬  Mensagem de abertura**\n{mensagem_txt}"),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(f"-# {guild.name}"),
+            accent_colour=config.COR_PADRAO,
+        )
     )
-    embed.set_footer(text=guild.name, icon_url=guild.icon.url if guild.icon else None)
-    await utils.responder(interaction, embed)
+    await utils.responder(interaction, view)
 
 
 @grupo_config.command(name="resetar", description="Apaga a configuração do servidor")
@@ -285,7 +295,7 @@ async def ticket_adicionar(interaction: discord.Interaction, membro: discord.Mem
     await utils.responder(interaction, utils.sucesso(f"{membro.mention} foi adicionado ao ticket."))
     await utils.enviar_log(
         interaction.guild,
-        utils.log_embed(
+        utils.log_view(
             "Membro adicionado", ticket, interaction.user, interaction.guild, config.COR_INFO,
             f"{membro.mention} (`{membro.id}`)",
         ),
@@ -311,7 +321,7 @@ async def ticket_remover(interaction: discord.Interaction, membro: discord.Membe
     await utils.responder(interaction, utils.sucesso(f"{membro.mention} foi removido do ticket."))
     await utils.enviar_log(
         interaction.guild,
-        utils.log_embed(
+        utils.log_view(
             "Membro removido", ticket, interaction.user, interaction.guild, config.COR_INFO,
             f"{membro.mention} (`{membro.id}`)",
         ),
@@ -328,15 +338,21 @@ async def ticket_stats(interaction: discord.Interaction) -> None:
         if dados["media"] is not None
         else "`sem avaliações`"
     )
-    embed = discord.Embed(
-        title="📊 Estatísticas de atendimento",
-        color=config.COR_PADRAO,
-        timestamp=discord.utils.utcnow(),
+    corpo = (
+        f"**Total de tickets** • {dados['total']}\n"
+        f"**Abertos agora** • {dados['abertos']}\n"
+        f"**Média das avaliações** • {media}"
     )
-    embed.add_field(name="Total de tickets", value=str(dados["total"]), inline=True)
-    embed.add_field(name="Abertos agora", value=str(dados["abertos"]), inline=True)
-    embed.add_field(name="Média das avaliações", value=media, inline=False)
-    await utils.responder(interaction, embed)
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(
+        discord.ui.Container(
+            discord.ui.TextDisplay(f"### 📊  Estatísticas de atendimento\n{corpo}"),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(f"-# {interaction.guild.name}"),
+            accent_colour=config.COR_PADRAO,
+        )
+    )
+    await utils.responder(interaction, view)
 
 
 # ==================================================================== erros
@@ -345,16 +361,16 @@ async def on_app_command_error(
     interaction: discord.Interaction, error: app_commands.AppCommandError
 ) -> None:
     if isinstance(error, app_commands.MissingPermissions):
-        embed = utils.erro("Você precisa da permissão **Gerenciar Servidor** para usar este comando.")
+        view = utils.erro("Você precisa da permissão **Gerenciar Servidor** para usar este comando.")
     elif isinstance(error, app_commands.CommandOnCooldown):
-        embed = utils.aviso(f"Aguarde {error.retry_after:.0f}s para usar este comando novamente.")
+        view = utils.aviso(f"Aguarde {error.retry_after:.0f}s para usar este comando novamente.")
     elif isinstance(error, app_commands.NoPrivateMessage):
-        embed = utils.erro("Este comando só funciona dentro de um servidor.")
+        view = utils.erro("Este comando só funciona dentro de um servidor.")
     else:
-        embed = utils.erro("Ocorreu um erro inesperado ao executar este comando.")
+        view = utils.erro("Ocorreu um erro inesperado ao executar este comando.")
         print(f"[erro] {type(error).__name__}: {error}")
     try:
-        await utils.responder(interaction, embed)
+        await utils.responder(interaction, view)
     except discord.HTTPException:
         pass
 
