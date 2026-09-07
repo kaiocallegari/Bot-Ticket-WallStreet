@@ -190,13 +190,50 @@ def arquivo_transcript(pagina: str, numero: int) -> discord.File:
     return discord.File(io.BytesIO(pagina.encode("utf-8")), filename=f"ticket-{numero:04d}.html")
 
 
-async def gerar_transcript(canal: discord.TextChannel, ticket: dict) -> str | None:
+def transcript_view(
+    ticket: dict,
+    canal_nome: str,
+    staff: discord.abc.User,
+    membro: discord.abc.User | None,
+    total_mensagens: int,
+) -> discord.ui.LayoutView:
+    meta = config.CATEGORIAS.get(ticket["categoria"], {"nome": ticket["categoria"], "emoji": "🎫"})
+    aberto_por = str(membro) if membro else f"ID {ticket['user_id']}"
+
+    linhas = [
+        f"**Ticket** • {meta['emoji']} #{ticket['numero']:04d} - {canal_nome}",
+        f"**Mensagens** • {total_mensagens}",
+        f"**Aberto por** • {aberto_por}\nID: {ticket['user_id']}",
+        f"**Fechado por** • {staff}",
+    ]
+
+    agora = discord.utils.format_dt(discord.utils.utcnow(), style="f")
+    container = discord.ui.Container(
+        discord.ui.Section(
+            discord.ui.TextDisplay(
+                "### 🗂️  Histórico de ticket gerado\n"
+                "O histórico desta conversa foi salvo e pode ser acessado pelo arquivo abaixo."
+            ),
+            accessory=discord.ui.Thumbnail(staff.display_avatar.url),
+        ),
+        discord.ui.Separator(),
+        discord.ui.TextDisplay("\n".join(linhas)),
+        discord.ui.Separator(),
+        discord.ui.TextDisplay(f"-# {agora}"),
+        accent_colour=config.COR_INFO,
+    )
+    view = discord.ui.LayoutView(timeout=None)
+    view.add_item(container)
+    return view
+
+
+async def gerar_transcript(canal: discord.TextChannel, ticket: dict) -> tuple[str | None, int]:
     try:
         mensagens = [
             m async for m in canal.history(limit=config.LIMITE_TRANSCRIPT, oldest_first=True)
         ]
     except discord.HTTPException:
-        return None
+        return None, 0
 
     linhas = []
     for m in mensagens:
@@ -223,13 +260,14 @@ async def gerar_transcript(canal: discord.TextChannel, ticket: dict) -> str | No
     meta = config.CATEGORIAS.get(ticket["categoria"], {"nome": ticket["categoria"]})
     membro = canal.guild.get_member(ticket["user_id"])
     aberto = datetime.fromisoformat(ticket["aberto_em"])
-    return _HTML.format(
+    pagina = _HTML.format(
         numero=f"{ticket['numero']:04d}",
         categoria=html.escape(meta["nome"]),
         membro=html.escape(str(membro) if membro else f"ID {ticket['user_id']}"),
         assunto=html.escape(ticket["assunto"] or "—"),
         aberto=_fmt(aberto),
-        total=len(linhas),
+        total=len(mensagens),
         mensagens="\n".join(linhas) or '<div class="fim">Nenhuma mensagem registrada.</div>',
         gerado=_fmt(discord.utils.utcnow()),
     )
+    return pagina, len(mensagens)

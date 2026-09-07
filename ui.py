@@ -187,15 +187,23 @@ async def finalizar_ticket(
     await database.fechar(canal.id, staff.id)
     ticket = await database.get_ticket(canal.id) or ticket
 
-    pagina = await utils.gerar_transcript(canal, ticket) if cfg["transcript_ativo"] else None
-
-    await utils.enviar_log(
-        guild,
-        utils.log_view("Ticket finalizado", ticket, staff, guild, config.COR_ERRO, motivo),
-        utils.arquivo_transcript(pagina, ticket["numero"]) if pagina else None,
+    pagina, total_mensagens = (
+        await utils.gerar_transcript(canal, ticket) if cfg["transcript_ativo"] else (None, 0)
     )
 
     membro = guild.get_member(ticket["user_id"])
+
+    if pagina:
+        log_view = utils.transcript_view(ticket, canal.name, staff, membro, total_mensagens)
+    else:
+        log_view = utils.log_view("Ticket finalizado", ticket, staff, guild, config.COR_ERRO, motivo)
+
+    await utils.enviar_log(
+        guild,
+        log_view,
+        utils.arquivo_transcript(pagina, ticket["numero"]) if pagina else None,
+    )
+
     if membro:
         await _enviar_dm(membro, ticket, guild, cfg, pagina)
 
