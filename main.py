@@ -4,6 +4,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import admin
 import config
 import cupons
 import database
@@ -26,6 +27,7 @@ class TicketBot(commands.Bot):
         self.add_view(ui.AvaliacaoView())
         self.add_view(cupons.PainelCuponsView())
         self.add_view(cupons.PainelCupomPublicoView())
+        self.add_view(admin.PainelAdminView())
 
         self.tree.add_command(grupo_config)
         self.tree.add_command(grupo_ticket)
@@ -67,164 +69,14 @@ grupo_config = app_commands.Group(
 )
 
 
-@grupo_config.command(name="painel", description="Publica o painel de atendimento neste canal")
-async def cfg_painel(interaction: discord.Interaction) -> None:
+@grupo_config.command(name="painel-admin", description="Publica o painel administrativo neste canal")
+async def cfg_painel_admin(interaction: discord.Interaction) -> None:
     guild, canal = interaction.guild, interaction.channel
     if guild is None or not isinstance(canal, discord.TextChannel):
         return
-    cfg = await database.get_config(guild.id)
-    faltando = [
-        meta["nome"]
-        for meta in config.CATEGORIAS.values()
-        if not isinstance(guild.get_channel(cfg[meta["campo_config"]] or 0), discord.CategoryChannel)
-    ]
-    mensagem = await canal.send(view=ui.PainelView())
-    await database.set_config(guild.id, canal_painel=canal.id, mensagem_painel=mensagem.id)
-
-    texto = "Painel publicado com sucesso."
-    if faltando:
-        texto += "\n\n⚠️ Configure ainda a categoria de: **" + "**, **".join(faltando) + "**."
-    await utils.responder(interaction, utils.sucesso(texto))
-
-
-@grupo_config.command(name="painel-cupons", description="Publica o painel de gerenciamento de cupons neste canal")
-async def cfg_painel_cupons(interaction: discord.Interaction) -> None:
-    guild, canal = interaction.guild, interaction.channel
-    if guild is None or not isinstance(canal, discord.TextChannel):
-        return
-    mensagem = await canal.send(view=cupons.PainelCuponsView())
-    await database.set_config(guild.id, canal_cupons=canal.id, mensagem_cupons=mensagem.id)
-    await utils.responder(interaction, utils.sucesso("Painel de gerenciamento de cupons publicado com sucesso."))
-
-
-@grupo_config.command(
-    name="painel-cupons-publico", description="Publica o painel público de cupons neste canal"
-)
-async def cfg_painel_cupons_publico(interaction: discord.Interaction) -> None:
-    guild, canal = interaction.guild, interaction.channel
-    if guild is None or not isinstance(canal, discord.TextChannel):
-        return
-    mensagem = await canal.send(view=cupons.PainelCupomPublicoView())
-    await database.set_config(guild.id, canal_cupons_publico=canal.id, mensagem_cupons_publico=mensagem.id)
-    await utils.responder(interaction, utils.sucesso("Painel público de cupons publicado com sucesso."))
-
-
-@grupo_config.command(name="cargo-dono", description="Define o cargo com acesso à criação de cupons")
-@app_commands.describe(cargo="Cargo dos donos da loja")
-async def cfg_cargo_dono(interaction: discord.Interaction, cargo: discord.Role) -> None:
-    await database.set_config(interaction.guild.id, cargo_dono=cargo.id)
-    await utils.responder(
-        interaction, utils.sucesso(f"O cargo {cargo.mention} agora tem acesso à criação de cupons.")
-    )
-
-
-@grupo_config.command(
-    name="categoria-suporte", description="Define a categoria onde os tickets de Suporte são criados"
-)
-@app_commands.describe(categoria="Categoria do Discord")
-async def cfg_cat_suporte(
-    interaction: discord.Interaction, categoria: discord.CategoryChannel
-) -> None:
-    await database.set_config(interaction.guild.id, categoria_suporte=categoria.id)
-    await utils.responder(
-        interaction, utils.sucesso(f"Tickets de **Suporte** serão criados em **{categoria.name}**.")
-    )
-
-
-@grupo_config.command(
-    name="categoria-comprar", description="Define a categoria onde os tickets de Comprar são criados"
-)
-@app_commands.describe(categoria="Categoria do Discord")
-async def cfg_cat_comprar(
-    interaction: discord.Interaction, categoria: discord.CategoryChannel
-) -> None:
-    await database.set_config(interaction.guild.id, categoria_comprar=categoria.id)
-    await utils.responder(
-        interaction, utils.sucesso(f"Tickets de **Comprar** serão criados em **{categoria.name}**.")
-    )
-
-
-@grupo_config.command(name="canal-logs", description="Canal de auditoria e arquivamento dos transcripts")
-@app_commands.describe(canal="Canal de texto")
-async def cfg_logs(interaction: discord.Interaction, canal: discord.TextChannel) -> None:
-    await database.set_config(interaction.guild.id, canal_logs=canal.id)
-    await utils.responder(interaction, utils.sucesso(f"Logs serão enviados em {canal.mention}."))
-
-
-@grupo_config.command(name="canal-avaliacoes", description="Canal onde as avaliações são publicadas")
-@app_commands.describe(canal="Canal de texto")
-async def cfg_avaliacoes(interaction: discord.Interaction, canal: discord.TextChannel) -> None:
-    await database.set_config(interaction.guild.id, canal_avaliacoes=canal.id)
-    await utils.responder(
-        interaction, utils.sucesso(f"Avaliações serão publicadas em {canal.mention}.")
-    )
-
-
-@grupo_config.command(name="cargo-adicionar", description="Autoriza um cargo nas funções administrativas")
-@app_commands.describe(cargo="Cargo da equipe")
-async def cfg_cargo_add(interaction: discord.Interaction, cargo: discord.Role) -> None:
-    novo = await database.add_cargo(interaction.guild.id, cargo.id)
-    view = (
-        utils.sucesso(f"O cargo {cargo.mention} agora tem acesso aos tickets.")
-        if novo
-        else utils.aviso(f"O cargo {cargo.mention} já estava autorizado.")
-    )
-    await utils.responder(interaction, view)
-
-
-@grupo_config.command(name="cargo-remover", description="Remove a autorização de um cargo")
-@app_commands.describe(cargo="Cargo da equipe")
-async def cfg_cargo_rem(interaction: discord.Interaction, cargo: discord.Role) -> None:
-    removido = await database.remove_cargo(interaction.guild.id, cargo.id)
-    view = (
-        utils.sucesso(f"O cargo {cargo.mention} não tem mais acesso aos tickets.")
-        if removido
-        else utils.aviso(f"O cargo {cargo.mention} não estava autorizado.")
-    )
-    await utils.responder(interaction, view)
-
-
-@grupo_config.command(name="limite-tickets", description="Máximo de tickets abertos por membro")
-@app_commands.describe(quantidade="Entre 1 e 10")
-async def cfg_limite(
-    interaction: discord.Interaction, quantidade: app_commands.Range[int, 1, 10]
-) -> None:
-    await database.set_config(interaction.guild.id, limite_por_membro=quantidade)
-    await utils.responder(
-        interaction, utils.sucesso(f"Limite definido em **{quantidade}** ticket(s) por membro.")
-    )
-
-
-@grupo_config.command(name="mensagem-abertura", description="Edita o texto de boas-vindas do ticket")
-async def cfg_mensagem(interaction: discord.Interaction) -> None:
-    cfg = await database.get_config(interaction.guild.id)
-    await interaction.response.send_modal(ui.AberturaModal(cfg["mensagem_abertura"]))
-
-
-ESCOLHAS = [
-    app_commands.Choice(name="ativar", value=1),
-    app_commands.Choice(name="desativar", value=0),
-]
-
-
-@grupo_config.command(name="avaliacao", description="Liga ou desliga a avaliação por estrelas")
-@app_commands.choices(estado=ESCOLHAS)
-async def cfg_avaliacao(
-    interaction: discord.Interaction, estado: app_commands.Choice[int]
-) -> None:
-    await database.set_config(interaction.guild.id, avaliacao_ativa=estado.value)
-    texto = "ativada" if estado.value else "desativada"
-    await utils.responder(interaction, utils.sucesso(f"Avaliação por estrelas **{texto}**."))
-
-
-@grupo_config.command(name="transcript", description="Liga ou desliga a geração do transcript")
-@app_commands.choices(estado=ESCOLHAS)
-async def cfg_transcript(
-    interaction: discord.Interaction, estado: app_commands.Choice[int]
-) -> None:
-    await database.set_config(interaction.guild.id, transcript_ativo=estado.value)
-    texto = "ativado" if estado.value else "desativado"
-    await utils.responder(interaction, utils.sucesso(f"Geração de transcript **{texto}**."))
+    mensagem = await canal.send(view=admin.PainelAdminView())
+    await database.set_config(guild.id, canal_painel_admin=canal.id, mensagem_painel_admin=mensagem.id)
+    await utils.responder(interaction, utils.sucesso("Painel administrativo publicado com sucesso."))
 
 
 @grupo_config.command(name="ver", description="Mostra toda a configuração atual do servidor")
@@ -248,6 +100,7 @@ async def cfg_ver(interaction: discord.Interaction) -> None:
         f"**Comprar** • {categoria(cfg['categoria_comprar'])}"
     )
     canais_txt = (
+        f"**Painel administrativo** • {canal(cfg['canal_painel_admin'])}\n"
         f"**Logs** • {canal(cfg['canal_logs'])}\n"
         f"**Avaliações** • {canal(cfg['canal_avaliacoes'])}"
     )
@@ -289,15 +142,6 @@ async def cfg_ver(interaction: discord.Interaction) -> None:
         )
     )
     await utils.responder(interaction, view)
-
-
-@grupo_config.command(name="resetar", description="Apaga a configuração do servidor")
-async def cfg_resetar(interaction: discord.Interaction) -> None:
-    await database.reset_config(interaction.guild.id)
-    await utils.responder(
-        interaction,
-        utils.sucesso("Configuração apagada. Os tickets já registrados foram mantidos."),
-    )
 
 
 # ==================================================================== /ticket
@@ -459,5 +303,4 @@ async def on_app_command_error(
 if __name__ == "__main__":
     if not config.TOKEN:
         raise SystemExit("Defina DISCORD_TOKEN no arquivo .env")
-    discord.utils.setup_logging()
     bot.run(config.TOKEN)

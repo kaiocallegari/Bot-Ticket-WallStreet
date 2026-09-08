@@ -26,7 +26,9 @@ CREATE TABLE IF NOT EXISTS guild_config (
     mensagem_cupons           INTEGER,
     canal_cupons_publico      INTEGER,
     mensagem_cupons_publico   INTEGER,
-    cargo_dono                INTEGER
+    cargo_dono                INTEGER,
+    canal_painel_admin        INTEGER,
+    mensagem_painel_admin     INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS staff_roles (
@@ -100,6 +102,8 @@ PADRAO: dict[str, Any] = {
     "canal_cupons_publico": None,
     "mensagem_cupons_publico": None,
     "cargo_dono": None,
+    "canal_painel_admin": None,
+    "mensagem_painel_admin": None,
 }
 
 # Tipo SQL de cada coluna de guild_config, usado pela migração idempotente em init().

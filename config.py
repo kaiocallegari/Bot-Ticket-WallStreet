@@ -66,3 +66,6 @@ CUPOM_PAINEL_DONO_TITULO = "🎫 Gerenciamento de Cupons"
 CUPOM_PAINEL_DONO_INTRO = "Área restrita. Crie, consulte e cancele cupons de desconto."
 CUPOM_PAINEL_PUB_TITULO = "🎟️ Meus Cupons"
 CUPOM_PAINEL_PUB_INTRO = "Clique abaixo para ver os cupons de desconto que estão no seu nome."
+
+ADMIN_PAINEL_TITULO = "🛠️ Painel Administrativo"
+ADMIN_PAINEL_INTRO = "Área restrita. Configure canais, categorias, cargos e publique os painéis por aqui."
