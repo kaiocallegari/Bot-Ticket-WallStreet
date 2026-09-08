@@ -6,6 +6,7 @@ import re
 import discord
 
 import config
+import cupons
 import database
 import utils
 
@@ -505,6 +506,10 @@ class AtendimentoView(discord.ui.LayoutView):
                 style=discord.ButtonStyle.secondary, custom_id="atd:assumir",
             ),
             _AcaoButton(
+                acao=self._cupom, label="Aplicar Cupom", emoji="🎟️",
+                style=discord.ButtonStyle.secondary, custom_id="atd:cupom",
+            ),
+            _AcaoButton(
                 acao=self._finalizar, label="Finalizar Ticket", emoji="✅",
                 style=discord.ButtonStyle.success, custom_id="atd:finalizar",
             ),
@@ -607,6 +612,12 @@ class AtendimentoView(discord.ui.LayoutView):
                     "Ticket assumido", ticket, interaction.user, interaction.guild, config.COR_INFO
                 ),
             )
+
+    async def _cupom(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        ticket = await _ticket_valido(interaction)
+        if not ticket:
+            return
+        await interaction.response.send_modal(cupons.AplicarCupomModal())
 
     async def _finalizar(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         ticket = await _ticket_valido(interaction)

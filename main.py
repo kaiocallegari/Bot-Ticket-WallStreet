@@ -5,6 +5,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import config
+import cupons
 import database
 import ui
 import utils
@@ -23,9 +24,12 @@ class TicketBot(commands.Bot):
         self.add_view(ui.PainelView())
         self.add_view(ui.AtendimentoView())
         self.add_view(ui.AvaliacaoView())
+        self.add_view(cupons.PainelCuponsView())
+        self.add_view(cupons.PainelCupomPublicoView())
 
         self.tree.add_command(grupo_config)
         self.tree.add_command(grupo_ticket)
+        self.tree.add_command(grupo_cupom)
 
         if config.GUILD_ID:
             guild = discord.Object(id=int(config.GUILD_ID))
@@ -37,6 +41,7 @@ class TicketBot(commands.Bot):
     async def on_ready(self) -> None:
         for guild in self.guilds:
             await database.limpar_orfaos(guild.id, {c.id for c in guild.channels})
+            await database.expirar_cupons(guild.id)
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching, name="a Central de Atendimento"
@@ -80,6 +85,37 @@ async def cfg_painel(interaction: discord.Interaction) -> None:
     if faltando:
         texto += "\n\n⚠️ Configure ainda a categoria de: **" + "**, **".join(faltando) + "**."
     await utils.responder(interaction, utils.sucesso(texto))
+
+
+@grupo_config.command(name="painel-cupons", description="Publica o painel de gerenciamento de cupons neste canal")
+async def cfg_painel_cupons(interaction: discord.Interaction) -> None:
+    guild, canal = interaction.guild, interaction.channel
+    if guild is None or not isinstance(canal, discord.TextChannel):
+        return
+    mensagem = await canal.send(view=cupons.PainelCuponsView())
+    await database.set_config(guild.id, canal_cupons=canal.id, mensagem_cupons=mensagem.id)
+    await utils.responder(interaction, utils.sucesso("Painel de gerenciamento de cupons publicado com sucesso."))
+
+
+@grupo_config.command(
+    name="painel-cupons-publico", description="Publica o painel público de cupons neste canal"
+)
+async def cfg_painel_cupons_publico(interaction: discord.Interaction) -> None:
+    guild, canal = interaction.guild, interaction.channel
+    if guild is None or not isinstance(canal, discord.TextChannel):
+        return
+    mensagem = await canal.send(view=cupons.PainelCupomPublicoView())
+    await database.set_config(guild.id, canal_cupons_publico=canal.id, mensagem_cupons_publico=mensagem.id)
+    await utils.responder(interaction, utils.sucesso("Painel público de cupons publicado com sucesso."))
+
+
+@grupo_config.command(name="cargo-dono", description="Define o cargo com acesso à criação de cupons")
+@app_commands.describe(cargo="Cargo dos donos da loja")
+async def cfg_cargo_dono(interaction: discord.Interaction, cargo: discord.Role) -> None:
+    await database.set_config(interaction.guild.id, cargo_dono=cargo.id)
+    await utils.responder(
+        interaction, utils.sucesso(f"O cargo {cargo.mention} agora tem acesso à criação de cupons.")
+    )
 
 
 @grupo_config.command(
@@ -224,6 +260,15 @@ async def cfg_ver(interaction: discord.Interaction) -> None:
     )
     mensagem_txt = (cfg["mensagem_abertura"] or config.MENSAGEM_ABERTURA_PADRAO)[:1024]
 
+    cargo_dono_txt = f"<@&{cfg['cargo_dono']}>" if cfg["cargo_dono"] else "`não definido`"
+    total_cupons_ativos = len(await database.listar_cupons(guild.id, "ativo"))
+    cupons_txt = (
+        f"**Painel de donos** • {canal(cfg['canal_cupons'])}\n"
+        f"**Painel público** • {canal(cfg['canal_cupons_publico'])}\n"
+        f"**Cargo de dono** • {cargo_dono_txt}\n"
+        f"**Cupons ativos** • {total_cupons_ativos}"
+    )
+
     view = discord.ui.LayoutView(timeout=None)
     view.add_item(
         discord.ui.Container(
@@ -234,6 +279,8 @@ async def cfg_ver(interaction: discord.Interaction) -> None:
             discord.ui.TextDisplay(f"**📡  Canais**\n{canais_txt}"),
             discord.ui.Separator(),
             discord.ui.TextDisplay(f"**🎚️  Opções**\n{opcoes_txt}"),
+            discord.ui.Separator(),
+            discord.ui.TextDisplay(f"**🎫  Cupons**\n{cupons_txt}"),
             discord.ui.Separator(),
             discord.ui.TextDisplay(f"**💬  Mensagem de abertura**\n{mensagem_txt}"),
             discord.ui.Separator(),
@@ -353,6 +400,40 @@ async def ticket_stats(interaction: discord.Interaction) -> None:
         )
     )
     await utils.responder(interaction, view)
+
+
+# ==================================================================== /cupom
+grupo_cupom = app_commands.Group(
+    name="cupom", description="Gerenciamento de cupons de desconto", guild_only=True
+)
+
+
+@grupo_cupom.command(name="ver", description="Mostra os detalhes de um cupom")
+@app_commands.describe(codigo="Código do cupom")
+async def cupom_ver(interaction: discord.Interaction, codigo: str) -> None:
+    if not await cupons.garantir_dono(interaction):
+        return
+    codigo = codigo.strip().upper()
+    cupom = await database.get_cupom(interaction.guild.id, codigo)
+    if not cupom:
+        await utils.responder(interaction, utils.erro(f"Nenhum cupom encontrado com o código `{codigo}`."))
+        return
+    await utils.responder(interaction, cupons.detalhe_view(cupom))
+
+
+@grupo_cupom.command(name="listar", description="Lista os cupons ativos")
+async def cupom_listar(interaction: discord.Interaction) -> None:
+    if not await cupons.garantir_dono(interaction):
+        return
+    await cupons.enviar_cupons_ativos(interaction)
+
+
+@grupo_cupom.command(name="cancelar", description="Cancela um cupom ativo")
+@app_commands.describe(codigo="Código do cupom")
+async def cupom_cancelar(interaction: discord.Interaction, codigo: str) -> None:
+    if not await cupons.garantir_dono(interaction):
+        return
+    await cupons.cancelar_e_notificar(interaction, codigo.strip().upper())
 
 
 # ==================================================================== erros

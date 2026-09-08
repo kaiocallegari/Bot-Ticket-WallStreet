@@ -55,3 +55,14 @@ DELAY_DELETAR = 8
 
 # Máximo de mensagens salvas no transcript
 LIMITE_TRANSCRIPT = 2000
+
+# Cupons de desconto
+DESCONTOS = [15, 20, 30, 50, 60]  # percentuais permitidos
+VALIDADE_MAX_DIAS = 365
+CODIGO_MIN = 3
+CODIGO_MAX = 20
+
+CUPOM_PAINEL_DONO_TITULO = "🎫 Gerenciamento de Cupons"
+CUPOM_PAINEL_DONO_INTRO = "Área restrita. Crie, consulte e cancele cupons de desconto."
+CUPOM_PAINEL_PUB_TITULO = "🎟️ Meus Cupons"
+CUPOM_PAINEL_PUB_INTRO = "Clique abaixo para ver os cupons de desconto que estão no seu nome."

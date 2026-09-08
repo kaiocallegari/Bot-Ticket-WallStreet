@@ -20,6 +20,13 @@ def slug(texto: str, maximo: int = 20) -> str:
     return texto[:maximo].strip("-") or "staff"
 
 
+# ---------------------------------------------------------------- valores
+def formatar_real(valor: float) -> str:
+    """Formata um número como reais: ponto de milhar, vírgula decimal (ex: R$ 1.234,56)."""
+    texto = f"{valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {texto}"
+
+
 # ---------------------------------------------------------------- avisos (Components V2)
 def _notice(titulo: str, desc: str, cor: int) -> discord.ui.LayoutView:
     view = discord.ui.LayoutView(timeout=None)
